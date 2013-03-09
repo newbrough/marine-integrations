@@ -31,7 +31,7 @@ import gevent
 import json
 import ntplib
 import time
-
+from pyon.core.exception import IonException, ExceptionFactory
 from mock import Mock
 from mi.core.unit_test import MiIntTestCase
 from mi.core.unit_test import MiUnitTest
@@ -86,6 +86,7 @@ from ion.agents.port.port_agent_process import PortAgentProcess
 from pyon.core.exception import Conflict
 from pyon.agent.agent import ResourceAgentState
 from pyon.agent.agent import ResourceAgentEvent
+from ooi.logging import log
 
 # Do not remove this import.  It is for package building.
 from mi.core.instrument.zmq_driver_process import ZmqDriverProcess
@@ -95,6 +96,36 @@ GET_TIMEOUT=30
 SET_TIMEOUT=90
 EXECUTE_TIMEOUT=30
 SAMPLE_RAW_DATA="Iam Apublished Message"
+
+EXCEPTION_FACTORY = ExceptionFactory()
+
+from unittest.case import _AssertRaisesContext
+class LooseExceptionCheckingContext(_AssertRaisesContext):
+    def __exit__(self,exc_type, exc_value, tb):
+        if exc_type is None:
+            try:
+                exc_name = self.expected.__name__
+            except AttributeError:
+                exc_name = str(self.expected)
+            raise self.failureException("{0} ain't raised".format(exc_name))
+        # expected exception types will NOT be original MI types
+        # since the assertion is made on the pycc side of ZMQ
+        # but the MI exception has been converted to the corresponding Ion exception.
+        # in those cases, just check that the error codes match
+        if not issubclass(exc_type, self.expected):
+            if issubclass(exc_type, IonException) and issubclass(self.expected, InstrumentException):
+                return exc_type.status_code == self.expected.error_code
+        self.exception = exc_value # store for later retrieval
+        if self.expected_regexp is None:
+            return True
+
+        expected_regexp = self.expected_regexp
+        if isinstance(expected_regexp, basestring):
+            expected_regexp = re.compile(expected_regexp)
+        if not expected_regexp.search(str(exc_value)):
+            raise self.failureException('"%s" does not match "%s"' %
+                                        (expected_regexp.pattern, str(exc_value)))
+        return True
 
 class DriverStartupConfigKey(BaseEnum):
     PARAMETERS = 'parameters'
@@ -1475,6 +1506,20 @@ class InstrumentDriverIntegrationTestCase(InstrumentDriverTestCase):   # Must in
         else:
             with self.assertRaises(exception_class):
                 reply = self.driver_client.cmd_dvr('set_resource', {param: value})
+
+    def assertRaises(self, excClass, callableObj=None, *args, **kwargs):
+        print 'in assertRaises'
+        context = LooseExceptionCheckingContext(excClass, self)
+        if callableObj is None:
+            return context
+        with context:
+            callableObj(*args, **kwargs)
+
+#        out = super(InstrumentDriverIntegrationTestCase,self).assertRaises(excClass, callableObj=callableObj, *args, **kwargs)
+#        print 'before change: %r' % out.__exit__
+#        out.__exit__ = self.__eggzit__
+#        print 'after change: %r' % out.__exit__
+#        return out
 
     def assert_driver_command(self, command, expected=None, regex=None, value_function=None, state=None, delay=0):
         """
